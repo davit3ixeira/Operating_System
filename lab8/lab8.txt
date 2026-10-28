@@ -1,0 +1,1270 @@
+Lab 9
+Nome: Davi Teixeira
+Matrícula: 2510420
+
+
+EXERCÍCIO 1
+------------------------------------------------------------------------------
+Enunciado:
+Escreva um programa que use myallocate para alocar e liberar memória
+dinamicamente.
+
+Código fonte (ex1_myallocate.c):
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <signal.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+
+static char bufferSaida[8192];
+static void *memorypool;
+
+void *myallocate(int n);
+void mydeallocate(void *bloco);
+void initmemorypool(void);
+void resetmemorypool(void);
+void testeOrdemInversa(char *a, char *c, int tamC);
+
+int main (void)
+{
+    setvbuf(stdout, bufferSaida, _IOFBF, sizeof bufferSaida);
+
+    initmemorypool();
+    printf("pool iniciado: break inicial = %p\n\n", memorypool);
+
+    int *a = (int *) myallocate(10 * sizeof(int));
+    printf("a = myallocate(%zu)   -> %p | break = %p\n", 10 * sizeof(int), (void *) a, sbrk(0));
+
+    char *b = (char *) myallocate(64);
+    printf("b = myallocate(64)   -> %p | break = %p\n", (void *) b, sbrk(0));
+
+    char *c = (char *) myallocate(8192);
+    printf("c = myallocate(8192) -> %p | break = %p\n\n", (void *) c, sbrk(0));
+
+    for (int i = 0; i < 10; i++)
+        a[i] = i * i;
+    strcpy(b, "memoria obtida direto do heap com sbrk()");
+    memset(c, 'Z', 8192);
+
+    printf("a[0..9] =");
+    for (int i = 0; i < 10; i++)
+        printf(" %d", a[i]);
+    printf("\nb = \"%s\"\n", b);
+    printf("c[0] = '%c', c[8191] = '%c'\n", c[0], c[8191]);
+    printf("b - a = %ld bytes, c - b = %ld bytes (blocos contiguos)\n\n", (long) (b - (char *) a), (long) (c - b));
+    fflush(stdout);
+
+    testeOrdemInversa((char *) a, c, 8192);
+
+    mydeallocate(c);
+    printf("mydeallocate(c)   -> break = %p (igual a c: %s)\n", sbrk(0), sbrk(0) == (void *) c ? "sim" : "nao");
+    mydeallocate(b);
+    printf("mydeallocate(b)   -> break = %p (igual a b: %s)\n", sbrk(0), sbrk(0) == (void *) b ? "sim" : "nao");
+    resetmemorypool();
+    printf("resetmemorypool() -> break = %p (igual ao inicio do pool: %s)\n", sbrk(0), sbrk(0) == memorypool ? "sim" : "nao");
+
+    return 0;
+}
+
+void *myallocate(int n)
+{
+    void *bloco = sbrk(n);
+    return bloco == (void *) -1 ? NULL : bloco;
+}
+
+void mydeallocate(void *bloco)
+{
+    brk(bloco);
+}
+
+void initmemorypool(void)
+{
+    memorypool = sbrk(0);
+}
+
+void resetmemorypool(void)
+{
+    brk(memorypool);
+}
+
+void testeOrdemInversa(char *a, char *c, int tamC)
+{
+    pid_t pid;
+    int status;
+
+    pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        exit(1);
+    }
+
+    if (pid == 0) {
+        printf("filho: liberando 'a' antes de 'b' e 'c' com brk(a)\n");
+        fflush(stdout);
+        mydeallocate(a);
+        printf("filho: break agora em %p, lendo c[%d]...\n", sbrk(0), tamC - 1);
+        fflush(stdout);
+        volatile char x = c[tamC - 1];
+        printf("filho: leitura funcionou (%c)\n", x);
+        fflush(stdout);
+        _exit(0);
+    }
+
+    waitpid(pid, &status, 0);
+    if (WIFSIGNALED(status))
+        printf("pai: filho terminou pelo sinal %d (%s)\n\n", WTERMSIG(status), WTERMSIG(status) == SIGSEGV ? "SIGSEGV" : "outro");
+    else
+        printf("pai: filho terminou normalmente com codigo %d\n\n", WEXITSTATUS(status));
+    fflush(stdout);
+}
+
+Linha de comando para compilação e execução:
+gcc -Wall -o ex1_myallocate ex1_myallocate.c
+./ex1_myallocate
+
+Saída gerada:
+pool iniciado: break inicial = 0x5624641c3000
+
+a = myallocate(40)   -> 0x5624641c3000 | break = 0x5624641c3028
+b = myallocate(64)   -> 0x5624641c3028 | break = 0x5624641c3068
+c = myallocate(8192) -> 0x5624641c3068 | break = 0x5624641c5068
+
+a[0..9] = 0 1 4 9 16 25 36 49 64 81
+b = "memoria obtida direto do heap com sbrk()"
+c[0] = 'Z', c[8191] = 'Z'
+b - a = 40 bytes, c - b = 64 bytes (blocos contiguos)
+
+filho: liberando 'a' antes de 'b' e 'c' com brk(a)
+filho: break agora em 0x5624641c3000, lendo c[8191]...
+pai: filho terminou pelo sinal 11 (SIGSEGV)
+
+mydeallocate(c)   -> break = 0x5624641c3068 (igual a c: sim)
+mydeallocate(b)   -> break = 0x5624641c3028 (igual a b: sim)
+resetmemorypool() -> break = 0x5624641c3000 (igual ao inicio do pool: sim)
+
+Evidência com strace (strace -f -e trace=brk ./ex1_myallocate, mesma execução
+do filho que libera fora de ordem):
+288   brk(NULL)                         = 0x5624641c3000
+288   brk(NULL)                         = 0x5624641c3000
+288   brk(0x5624641c3028)               = 0x5624641c3028
+288   brk(0x5624641c3068)               = 0x5624641c3068
+288   brk(0x5624641c5068)               = 0x5624641c5068
+289   brk(0x5624641c3000)               = 0x5624641c3000
+289   --- SIGSEGV {si_signo=SIGSEGV, si_code=SEGV_MAPERR, si_addr=0x5624641c5067} ---
+289   +++ killed by SIGSEGV +++
+288   --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_KILLED, si_pid=289, si_uid=0, si_status=SIGSEGV, si_utime=0, si_stime=0} ---
+288   brk(0x5624641c3068)               = 0x5624641c3068
+288   brk(0x5624641c3028)               = 0x5624641c3028
+288   brk(0x5624641c3000)               = 0x5624641c3000
+288   +++ exited with 0 +++
+
+Reflexão:
+myallocate(n) chama sbrk(n): o break do heap avança n bytes e o valor
+devolvido é o endereço antigo do break, ou seja, o início do bloco novo.
+Por isso os blocos a, b e c saem contíguos (b - a = 40, c - b = 64). A
+liberação com brk(bloco) devolve o break para o início do bloco, então só é
+possível liberar em ordem inversa (LIFO), como numa pilha: liberar c, depois
+b, depois o pool inteiro funcionou, e o break coincidiu com o endereço de
+cada bloco. Quando o filho liberou "a" antes de "c", o break voltou para o
+início de "a" e a leitura de c[8191] caiu em página já devolvida, resultando
+em SIGSEGV (confirmado pelo strace: si_addr = c + 8191). O programa usa
+setvbuf com buffer estático para a saída porque misturar printf (que usa
+malloc) com sbrk manual poderia corromper o heap.
+
+
+EXERCÍCIO 2
+------------------------------------------------------------------------------
+Enunciado:
+Execute o programa map-exemplo.c passando um nome de arquivo como parâmetro.
+Qual foi a novidade?
+
+Código fonte (map_exemplo.c):
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/mman.h>
+
+int main (int argc, char *argv[])
+{
+    struct stat sb;
+    off_t len;
+    char *p;
+    int fd;
+
+    if (argc < 2) {
+        fprintf(stderr, "usage: %s <file>\n", argv[0]);
+        exit(1);
+    }
+
+    fd = open(argv[1], O_RDONLY);
+    if (fd == -1) {
+        perror("open");
+        exit(1);
+    }
+
+    if (fstat(fd, &sb) == -1) {
+        perror("fstat");
+        exit(1);
+    }
+
+    if (!S_ISREG(sb.st_mode)) {
+        fprintf(stderr, "%s is not a file\n", argv[1]);
+        exit(1);
+    }
+
+    p = mmap(0, sb.st_size, PROT_READ, MAP_SHARED, fd, 0);
+    if (p == MAP_FAILED) {
+        perror("mmap");
+        exit(1);
+    }
+
+    if (close(fd) == -1) {
+        perror("close");
+        exit(1);
+    }
+
+    for (len = 0; len < sb.st_size; len++)
+        putchar(p[len]);
+
+    if (munmap(p, sb.st_size) == -1) {
+        perror("munmap");
+        exit(1);
+    }
+
+    return 0;
+}
+
+OBS: o código do slide foi corrigido para compilar (erro de digitação
+"!!!argv[0]" removido e includes necessários adicionados).
+
+Linha de comando para compilação e execução:
+gcc -Wall -o map_exemplo map_exemplo.c
+./map_exemplo texto.txt
+
+Saída gerada (conteúdo de texto.txt, idêntico ao arquivo; cmp não acusou
+diferença):
+Sistemas de Computacao - Manipulando a Memoria
+Este arquivo de texto sera lido sem nenhuma chamada read().
+O programa mapeia o arquivo inteiro na memoria com mmap()
+e depois percorre o conteudo como se fosse um vetor de char.
+
+Casos de erro testados:
+$ ./map_exemplo
+usage: ./map_exemplo <file>
+$ ./map_exemplo naoexiste.txt
+open: No such file or directory
+$ ./map_exemplo /tmp
+/tmp is not a file
+$ ./map_exemplo vazio.txt
+mmap: Invalid argument
+
+Evidência com strace (strace -e trace=openat,fstat,mmap,close,munmap,write):
+openat(AT_FDCWD, "texto.txt", O_RDONLY) = 3
+fstat(3, {st_mode=S_IFREG|0644, st_size=226, ...}) = 0
+mmap(NULL, 226, PROT_READ, MAP_SHARED, 3, 0) = 0x7f72720cb000
+close(3)                                = 0
+fstat(1, {st_mode=S_IFCHR|0666, st_rdev=makedev(0x1, 0x3), ...}) = 0
+munmap(0x7f72720cb000, 226)             = 0
+write(1, "Sistemas de Computacao - Manipul"..., 226) = 226
++++ exited with 0 +++
+
+Reflexão:
+A novidade é que o arquivo foi lido sem nenhuma chamada read(): o mmap
+associa o arquivo a uma região da memória do processo e o conteúdo é
+acessado por p[i], como se fosse um vetor. O strace mostra openat, fstat,
+mmap, close e munmap, e nenhum read() sobre o arquivo; o único write() é o
+da saída padrão. O arquivo pode ser fechado logo após o mmap, pois o
+mapeamento continua válido. Um arquivo vazio não pode ser mapeado (tamanho
+0 resulta em EINVAL).
+
+
+EXERCÍCIO 3
+------------------------------------------------------------------------------
+Enunciado:
+Modifique o programa map-exemplo.c para: (a) verificar quantas páginas de
+memória foram necessárias para o arquivo; (b) medir quanto mais rápido é
+escrever no arquivo mapeado do que fazer E/S em disco (dica: gettimeofday).
+
+Código fonte (ex3_map_paginas_tempo.c):
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/mman.h>
+
+#define REPETICOES 5
+#define SAIDA_WRITE "saida_write.bin"
+#define SAIDA_MMAP "saida_mmap.bin"
+
+typedef struct {
+    double semSync;
+    double comSync;
+} Tempos;
+
+typedef struct {
+    const char *nome;
+    int usaMmap;
+    size_t bloco;
+} Cenario;
+
+static long agoraUs(void);
+static long paginasNoKernel(void *p, long pagesize);
+static Tempos escreveWrite(const char *src, off_t n, size_t bloco);
+static Tempos escreveMmap(const char *src, off_t n, size_t bloco);
+static void mede(const char *src, off_t n, long pagesize);
+
+int main (int argc, char *argv[])
+{
+    struct stat sb;
+    long pagesize, paginas, noKernel;
+    char *p;
+    int fd;
+
+    if (argc < 2) {
+        fprintf(stderr, "usage: %s <file> [medir]\n", argv[0]);
+        exit(1);
+    }
+
+    fd = open(argv[1], O_RDONLY);
+    if (fd == -1) {
+        perror("open");
+        exit(1);
+    }
+
+    if (fstat(fd, &sb) == -1) {
+        perror("fstat");
+        exit(1);
+    }
+
+    if (!S_ISREG(sb.st_mode)) {
+        fprintf(stderr, "%s is not a file\n", argv[1]);
+        exit(1);
+    }
+
+    p = mmap(0, sb.st_size, PROT_READ, MAP_SHARED, fd, 0);
+    if (p == MAP_FAILED) {
+        perror("mmap");
+        exit(1);
+    }
+
+    if (close(fd) == -1) {
+        perror("close");
+        exit(1);
+    }
+
+    pagesize = sysconf(_SC_PAGESIZE);
+    paginas = (sb.st_size + pagesize - 1) / pagesize;
+    noKernel = paginasNoKernel(p, pagesize);
+
+    printf("arquivo: %s\n", argv[1]);
+    printf("tamanho do arquivo: %ld bytes\n", (long) sb.st_size);
+    printf("tamanho da pagina: %ld bytes\n", pagesize);
+    printf("paginas necessarias: %ld\n", paginas);
+    printf("bytes mapeados (paginas x tamanho): %ld\n", paginas * pagesize);
+    printf("bytes sobrando na ultima pagina (preenchidos com zero): %ld\n", paginas * pagesize - (long) sb.st_size);
+    printf("paginas do mapeamento segundo /proc/self/maps: %ld\n", noKernel);
+
+    if (argc >= 3 && strcmp(argv[2], "medir") == 0)
+        mede(p, sb.st_size, pagesize);
+
+    if (munmap(p, sb.st_size) == -1) {
+        perror("munmap");
+        exit(1);
+    }
+
+    return 0;
+}
+
+static long agoraUs(void)
+{
+    struct timeval tv;
+
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec * 1000000L + tv.tv_usec;
+}
+
+static long paginasNoKernel(void *p, long pagesize)
+{
+    FILE *f = fopen("/proc/self/maps", "r");
+    char linha[512];
+    unsigned long ini, fim;
+
+    if (f == NULL)
+        return -1;
+
+    while (fgets(linha, sizeof linha, f) != NULL) {
+        if (sscanf(linha, "%lx-%lx", &ini, &fim) == 2 && ini == (unsigned long) p) {
+            fclose(f);
+            return (long) ((fim - ini) / pagesize);
+        }
+    }
+
+    fclose(f);
+    return -1;
+}
+
+static Tempos escreveWrite(const char *src, off_t n, size_t bloco)
+{
+    Tempos t;
+    long ini, meio, fim;
+    off_t pos;
+    size_t q;
+    int fd;
+
+    ini = agoraUs();
+
+    fd = open(SAIDA_WRITE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd == -1) {
+        perror("open saida");
+        exit(1);
+    }
+
+    for (pos = 0; pos < n; pos += bloco) {
+        q = (n - pos < (off_t) bloco) ? (size_t) (n - pos) : bloco;
+        if (write(fd, src + pos, q) != (ssize_t) q) {
+            perror("write");
+            exit(1);
+        }
+    }
+
+    meio = agoraUs();
+
+    if (fsync(fd) == -1) {
+        perror("fsync");
+        exit(1);
+    }
+
+    fim = agoraUs();
+    close(fd);
+
+    t.semSync = (double) (meio - ini);
+    t.comSync = (double) (fim - ini);
+    return t;
+}
+
+static Tempos escreveMmap(const char *src, off_t n, size_t bloco)
+{
+    Tempos t;
+    long ini, meio, fim;
+    off_t pos;
+    size_t q;
+    char *d;
+    volatile char *v;
+    int fd;
+
+    ini = agoraUs();
+
+    fd = open(SAIDA_MMAP, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (fd == -1) {
+        perror("open saida");
+        exit(1);
+    }
+
+    if (ftruncate(fd, n) == -1) {
+        perror("ftruncate");
+        exit(1);
+    }
+
+    d = mmap(0, n, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (d == MAP_FAILED) {
+        perror("mmap saida");
+        exit(1);
+    }
+
+    if (bloco == 1) {
+        v = d;
+        for (pos = 0; pos < n; pos++)
+            v[pos] = src[pos];
+    } else {
+        for (pos = 0; pos < n; pos += bloco) {
+            q = (n - pos < (off_t) bloco) ? (size_t) (n - pos) : bloco;
+            memcpy(d + pos, src + pos, q);
+        }
+    }
+
+    meio = agoraUs();
+
+    if (msync(d, n, MS_SYNC) == -1) {
+        perror("msync");
+        exit(1);
+    }
+
+    fim = agoraUs();
+    munmap(d, n);
+    close(fd);
+
+    t.semSync = (double) (meio - ini);
+    t.comSync = (double) (fim - ini);
+    return t;
+}
+
+static void mede(const char *src, off_t n, long pagesize)
+{
+    Cenario cenarios[4] = {
+        {"write(), 1 byte por chamada", 0, 1},
+        {"write(), 1 pagina por chamada", 0, 0},
+        {"mmap, escrita byte a byte", 1, 1},
+        {"mmap, memcpy de 1 pagina por vez", 1, 0}
+    };
+    double semSync[4], comSync[4];
+    volatile unsigned long soma = 0;
+    off_t i;
+    int c, r;
+
+    for (i = 0; i < n; i++)
+        soma += (unsigned char) src[i];
+
+    printf("\nescrita de %ld bytes, media de %d repeticoes (tempos em microssegundos)\n", (long) n, REPETICOES);
+    printf("%-36s %16s %16s\n", "cenario", "sem sync", "com fsync/msync");
+
+    for (c = 0; c < 4; c++) {
+        size_t bloco = cenarios[c].bloco == 0 ? (size_t) pagesize : cenarios[c].bloco;
+        double somaSem = 0, somaCom = 0;
+
+        for (r = 0; r < REPETICOES; r++) {
+            Tempos t = cenarios[c].usaMmap ? escreveMmap(src, n, bloco) : escreveWrite(src, n, bloco);
+            somaSem += t.semSync;
+            somaCom += t.comSync;
+        }
+
+        semSync[c] = somaSem / REPETICOES;
+        comSync[c] = somaCom / REPETICOES;
+        printf("%-36s %16.0f %16.0f\n", cenarios[c].nome, semSync[c], comSync[c]);
+    }
+
+    printf("\nmmap byte a byte comparado com write() de 1 byte:  %.1f vezes mais rapido (sem sync), %.1f vezes (com sync)\n",
+           semSync[0] / semSync[2], comSync[0] / comSync[2]);
+    printf("mmap memcpy comparado com write() de 1 pagina:     %.1f vezes mais rapido (sem sync), %.1f vezes (com sync)\n",
+           semSync[1] / semSync[3], comSync[1] / comSync[3]);
+}
+
+Linha de comando para compilação e execução:
+gcc -Wall -o ex3_map_paginas_tempo ex3_map_paginas_tempo.c
+./ex3_map_paginas_tempo <arquivo>
+./ex3_map_paginas_tempo <arquivo> medir
+
+Saída gerada (letra a, número de páginas para seis arquivos):
+== ./ex3_map_paginas_tempo texto.txt
+arquivo: texto.txt
+tamanho do arquivo: 226 bytes
+tamanho da pagina: 4096 bytes
+paginas necessarias: 1
+bytes mapeados (paginas x tamanho): 4096
+bytes sobrando na ultima pagina (preenchidos com zero): 3870
+paginas do mapeamento segundo /proc/self/maps: 1
+== ./ex3_map_paginas_tempo arq_4096.bin
+arquivo: arq_4096.bin
+tamanho do arquivo: 4096 bytes
+tamanho da pagina: 4096 bytes
+paginas necessarias: 1
+bytes mapeados (paginas x tamanho): 4096
+bytes sobrando na ultima pagina (preenchidos com zero): 0
+paginas do mapeamento segundo /proc/self/maps: 1
+== ./ex3_map_paginas_tempo arq_4097.bin
+arquivo: arq_4097.bin
+tamanho do arquivo: 4097 bytes
+tamanho da pagina: 4096 bytes
+paginas necessarias: 2
+bytes mapeados (paginas x tamanho): 8192
+bytes sobrando na ultima pagina (preenchidos com zero): 4095
+paginas do mapeamento segundo /proc/self/maps: 2
+== ./ex3_map_paginas_tempo arq_10000.bin
+arquivo: arq_10000.bin
+tamanho do arquivo: 10000 bytes
+tamanho da pagina: 4096 bytes
+paginas necessarias: 3
+bytes mapeados (paginas x tamanho): 12288
+bytes sobrando na ultima pagina (preenchidos com zero): 2288
+paginas do mapeamento segundo /proc/self/maps: 3
+== ./ex3_map_paginas_tempo teste_1MiB.bin
+arquivo: teste_1MiB.bin
+tamanho do arquivo: 1048576 bytes
+tamanho da pagina: 4096 bytes
+paginas necessarias: 256
+bytes mapeados (paginas x tamanho): 1048576
+bytes sobrando na ultima pagina (preenchidos com zero): 0
+paginas do mapeamento segundo /proc/self/maps: 256
+
+Saída gerada (letra b, arquivo de 8 MiB, execução 1):
+arquivo: grande_8MiB.bin
+tamanho do arquivo: 8388608 bytes
+tamanho da pagina: 4096 bytes
+paginas necessarias: 2048
+bytes mapeados (paginas x tamanho): 8388608
+bytes sobrando na ultima pagina (preenchidos com zero): 0
+paginas do mapeamento segundo /proc/self/maps: 2048
+
+escrita de 8388608 bytes, media de 5 repeticoes (tempos em microssegundos)
+cenario                                      sem sync  com fsync/msync
+write(), 1 byte por chamada                   2932164          2947002
+write(), 1 pagina por chamada                   12074            27266
+mmap, escrita byte a byte                       26611            35952
+mmap, memcpy de 1 pagina por vez                 6881            16361
+
+mmap byte a byte comparado com write() de 1 byte:  110.2 vezes mais rapido (sem sync), 82.0 vezes (com sync)
+mmap memcpy comparado com write() de 1 pagina:     1.8 vezes mais rapido (sem sync), 1.7 vezes (com sync)
+
+Saída gerada (letra b, arquivo de 8 MiB, execução 2):
+arquivo: grande_8MiB.bin
+tamanho do arquivo: 8388608 bytes
+tamanho da pagina: 4096 bytes
+paginas necessarias: 2048
+bytes mapeados (paginas x tamanho): 8388608
+bytes sobrando na ultima pagina (preenchidos com zero): 0
+paginas do mapeamento segundo /proc/self/maps: 2048
+
+escrita de 8388608 bytes, media de 5 repeticoes (tempos em microssegundos)
+cenario                                      sem sync  com fsync/msync
+write(), 1 byte por chamada                   2956612          2971308
+write(), 1 pagina por chamada                   10154            24409
+mmap, escrita byte a byte                       26587            35888
+mmap, memcpy de 1 pagina por vez                 7598            17555
+
+mmap byte a byte comparado com write() de 1 byte:  111.2 vezes mais rapido (sem sync), 82.8 vezes (com sync)
+mmap memcpy comparado com write() de 1 pagina:     1.3 vezes mais rapido (sem sync), 1.4 vezes (com sync)
+
+Reflexão:
+(a) O número de páginas é o teto de tamanho/4096. O arquivo de 226 bytes usa
+1 página (3870 bytes sobram, preenchidos com zero), 4096 bytes usa 1 página
+sem sobra, 4097 bytes usa 2 páginas (4095 sobram) e 10000 bytes usa 3. O
+valor calculado bateu com o número de páginas do mapeamento em
+/proc/self/maps em todos os casos.
+(b) Escrever byte a byte pelo mmap foi cerca de 110 vezes mais rápido que
+write() de 1 byte por chamada, porque o write() paga uma chamada de sistema
+por byte e o mmap faz apenas uma escrita em memória. Contra write() de uma
+página por chamada, a vantagem foi pequena (1,3x a 1,8x), pois ambos acabam
+no cache de páginas do kernel. Ao incluir fsync/msync, o tempo é dominado
+pela gravação real em disco e a diferença diminui. Os valores dependem da
+máquina e do ambiente (este foi um contêiner), então só a ordem de grandeza
+deve ser considerada.
+
+
+EXERCÍCIO 4
+------------------------------------------------------------------------------
+Enunciado:
+Escreva dois programas, prog1.c e prog2.c, que troquem dados através do
+mesmo arquivo mapeado em memória (cada um faz o seu mapeamento).
+
+Código fonte (ex4_prog1.c):
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+
+#define ARQUIVO "troca.dat"
+#define RODADAS 5
+#define MAGICO 0x4D454D31
+#define VEZ_PROG1 1
+#define VEZ_PROG2 2
+#define VEZ_FIM 3
+
+struct canal {
+    int pronto;
+    int vez;
+    char texto[256];
+};
+
+static void esperaVez(struct canal *c, int quem);
+
+int main (void)
+{
+    struct canal *c;
+    int fd;
+
+    unlink(ARQUIVO);
+
+    fd = open(ARQUIVO, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (fd == -1) {
+        perror("open");
+        exit(1);
+    }
+
+    if (ftruncate(fd, sizeof(struct canal)) == -1) {
+        perror("ftruncate");
+        exit(1);
+    }
+
+    c = mmap(0, sizeof(struct canal), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (c == MAP_FAILED) {
+        perror("mmap");
+        exit(1);
+    }
+
+    close(fd);
+
+    __atomic_store_n(&c->vez, VEZ_PROG1, __ATOMIC_RELEASE);
+    __atomic_store_n(&c->pronto, MAGICO, __ATOMIC_RELEASE);
+
+    printf("prog1 (pid %d): arquivo %s criado e mapeado em %p\n", getpid(), ARQUIVO, (void *) c);
+    fflush(stdout);
+
+    for (int r = 1; r <= RODADAS; r++) {
+        esperaVez(c, VEZ_PROG1);
+        snprintf(c->texto, sizeof c->texto, "rodada %d: mensagem do prog1 (pid %d)", r, getpid());
+        printf("prog1 escreveu: \"%s\"\n", c->texto);
+        fflush(stdout);
+        __atomic_store_n(&c->vez, VEZ_PROG2, __ATOMIC_RELEASE);
+
+        esperaVez(c, VEZ_PROG1);
+        printf("prog1 leu:      \"%s\"\n", c->texto);
+        fflush(stdout);
+    }
+
+    __atomic_store_n(&c->vez, VEZ_FIM, __ATOMIC_RELEASE);
+    printf("prog1: %d rodadas concluidas, encerrando\n", RODADAS);
+
+    munmap(c, sizeof(struct canal));
+    return 0;
+}
+
+static void esperaVez(struct canal *c, int quem)
+{
+    while (__atomic_load_n(&c->vez, __ATOMIC_ACQUIRE) != quem)
+        usleep(10000);
+}
+
+Código fonte (ex4_prog2.c):
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+
+#define ARQUIVO "troca.dat"
+#define MAGICO 0x4D454D31
+#define VEZ_PROG1 1
+#define VEZ_PROG2 2
+#define VEZ_FIM 3
+
+struct canal {
+    int pronto;
+    int vez;
+    char texto[256];
+};
+
+int main (void)
+{
+    struct canal *c;
+    struct stat sb;
+    char recebido[256];
+    int fd = -1;
+    int vez;
+
+    for (int t = 0; t < 100; t++) {
+        fd = open(ARQUIVO, O_RDWR);
+        if (fd != -1) {
+            if (fstat(fd, &sb) == 0 && sb.st_size >= (off_t) sizeof(struct canal))
+                break;
+            close(fd);
+            fd = -1;
+        }
+        usleep(100000);
+    }
+
+    if (fd == -1) {
+        fprintf(stderr, "prog2: arquivo %s nao encontrado (execute o prog1 primeiro)\n", ARQUIVO);
+        exit(1);
+    }
+
+    c = mmap(0, sizeof(struct canal), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (c == MAP_FAILED) {
+        perror("mmap");
+        exit(1);
+    }
+
+    close(fd);
+
+    while (__atomic_load_n(&c->pronto, __ATOMIC_ACQUIRE) != MAGICO)
+        usleep(10000);
+
+    printf("prog2 (pid %d): arquivo %s mapeado em %p\n", getpid(), ARQUIVO, (void *) c);
+    fflush(stdout);
+
+    for (;;) {
+        while ((vez = __atomic_load_n(&c->vez, __ATOMIC_ACQUIRE)) == VEZ_PROG1)
+            usleep(10000);
+
+        if (vez == VEZ_FIM)
+            break;
+
+        strncpy(recebido, c->texto, sizeof recebido - 1);
+        recebido[sizeof recebido - 1] = '\0';
+        printf("prog2 leu:      \"%s\"\n", recebido);
+        fflush(stdout);
+
+        snprintf(c->texto, sizeof c->texto, "resposta do prog2 (pid %d) para [%.150s]", getpid(), recebido);
+        printf("prog2 escreveu: \"%s\"\n", c->texto);
+        fflush(stdout);
+        __atomic_store_n(&c->vez, VEZ_PROG1, __ATOMIC_RELEASE);
+    }
+
+    printf("prog2: prog1 sinalizou o fim, encerrando\n");
+
+    munmap(c, sizeof(struct canal));
+    return 0;
+}
+
+Linha de comando para compilação e execução (prog1 deve ser iniciado
+primeiro, pois cria o arquivo; prog2 espera até 10 s pelo arquivo):
+gcc -Wall -o ex4_prog1 ex4_prog1.c
+gcc -Wall -o ex4_prog2 ex4_prog2.c
+./ex4_prog1 > prog1.txt &
+./ex4_prog2 > prog2.txt
+
+Saída gerada (prog1):
+prog1 (pid 400): arquivo troca.dat criado e mapeado em 0x7f732f96f000
+prog1 escreveu: "rodada 1: mensagem do prog1 (pid 400)"
+prog1 leu:      "resposta do prog2 (pid 407) para [rodada 1: mensagem do prog1 (pid 400)]"
+prog1 escreveu: "rodada 2: mensagem do prog1 (pid 400)"
+prog1 leu:      "resposta do prog2 (pid 407) para [rodada 2: mensagem do prog1 (pid 400)]"
+prog1 escreveu: "rodada 3: mensagem do prog1 (pid 400)"
+prog1 leu:      "resposta do prog2 (pid 407) para [rodada 3: mensagem do prog1 (pid 400)]"
+prog1 escreveu: "rodada 4: mensagem do prog1 (pid 400)"
+prog1 leu:      "resposta do prog2 (pid 407) para [rodada 4: mensagem do prog1 (pid 400)]"
+prog1 escreveu: "rodada 5: mensagem do prog1 (pid 400)"
+prog1 leu:      "resposta do prog2 (pid 407) para [rodada 5: mensagem do prog1 (pid 400)]"
+prog1: 5 rodadas concluidas, encerrando
+
+Saída gerada (prog2):
+prog2 (pid 407): arquivo troca.dat mapeado em 0x7f84f7d1a000
+prog2 leu:      "rodada 1: mensagem do prog1 (pid 400)"
+prog2 escreveu: "resposta do prog2 (pid 407) para [rodada 1: mensagem do prog1 (pid 400)]"
+prog2 leu:      "rodada 2: mensagem do prog1 (pid 400)"
+prog2 escreveu: "resposta do prog2 (pid 407) para [rodada 2: mensagem do prog1 (pid 400)]"
+prog2 leu:      "rodada 3: mensagem do prog1 (pid 400)"
+prog2 escreveu: "resposta do prog2 (pid 407) para [rodada 3: mensagem do prog1 (pid 400)]"
+prog2 leu:      "rodada 4: mensagem do prog1 (pid 400)"
+prog2 escreveu: "resposta do prog2 (pid 407) para [rodada 4: mensagem do prog1 (pid 400)]"
+prog2 leu:      "rodada 5: mensagem do prog1 (pid 400)"
+prog2 escreveu: "resposta do prog2 (pid 407) para [rodada 5: mensagem do prog1 (pid 400)]"
+prog2: prog1 sinalizou o fim, encerrando
+
+Mapeamento do prog1 em /proc/PID/maps (flag s = compartilhado):
+7f732f96f000-7f732f970000 rw-s 00000000 fe:00 795077                     /home/claude/lab7memoria/troca.dat
+
+Tamanho do arquivo e strings do conteúdo final:
+-rw-r--r-- 1 root root 264 Oct 28 11:59 troca.dat
+1MEM
+resposta do prog2 (pid 407) para [rodada 5: mensagem do prog1 (pid 400)]
+
+Reflexão:
+Os dois processos abrem troca.dat e fazem mmap com MAP_SHARED, então as
+duas regiões apontam para as mesmas páginas do cache do kernel: o que um
+escreve o outro enxerga sem read/write. Cada processo viu o mapeamento em um
+endereço virtual diferente, o que não importa. Como não há bloqueio
+automático, usei uma estrutura com os campos pronto e vez, acessada com
+__atomic_load_n/__atomic_store_n (ACQUIRE/RELEASE) e espera por polling com
+usleep, para que um só leia depois que o outro terminou de escrever. O
+arquivo ficou com 264 bytes (sizeof da estrutura) e o último texto gravado
+aparece no conteúdo do arquivo (strings).
+
+
+EXERCÍCIO 5
+------------------------------------------------------------------------------
+Enunciado:
+Escreva um programa que mapeie um arquivo e depois escreva novos caracteres
+no final do arquivo. O que você precisa fazer para evitar um SegFault?
+(Dica: existe mremap no Linux.)
+
+Código fonte da demonstração dos erros (ex5_segfault.c):
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+
+static void mostraMapeamento(const char *rotulo, void *addr);
+
+int main (int argc, char *argv[])
+{
+    struct stat sb;
+    long pagesize = sysconf(_SC_PAGESIZE);
+    long mapeado;
+    size_t tamMap;
+    char *p, *reserva, *alvo;
+    const char *modo;
+    int fd;
+
+    if (argc < 3) {
+        fprintf(stderr, "Uso: %s arquivo dentro|fora|alem|guarda\n", argv[0]);
+        exit(1);
+    }
+
+    modo = argv[2];
+
+    fd = open(argv[1], O_RDWR);
+    if (fd == -1) {
+        perror("open");
+        exit(1);
+    }
+
+    if (fstat(fd, &sb) == -1) {
+        perror("fstat");
+        exit(1);
+    }
+
+    mapeado = ((sb.st_size + pagesize - 1) / pagesize) * pagesize;
+    tamMap = sb.st_size;
+    if (strcmp(modo, "alem") == 0)
+        tamMap = mapeado + pagesize;
+
+    if (strcmp(modo, "guarda") == 0) {
+        reserva = mmap(0, mapeado + pagesize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (reserva == MAP_FAILED) {
+            perror("mmap reserva");
+            exit(1);
+        }
+        p = mmap(reserva, sb.st_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
+    } else {
+        p = mmap(0, tamMap, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    }
+
+    if (p == MAP_FAILED) {
+        perror("mmap");
+        exit(1);
+    }
+
+    printf("arquivo: %ld bytes | pedido ao mmap: %zu bytes | paginas mapeadas do arquivo: %zu\n",
+           (long) sb.st_size, tamMap, (tamMap + pagesize - 1) / pagesize);
+
+    alvo = strcmp(modo, "dentro") == 0 ? p + sb.st_size : p + mapeado;
+
+    mostraMapeamento("mapeamento que contem o byte alvo", alvo);
+    printf("escrevendo 'X' em p[%ld] (modo %s)\n", (long) (alvo - p), modo);
+    fflush(stdout);
+
+    *alvo = 'X';
+
+    printf("escrita concluida sem erro\n");
+    fflush(stdout);
+
+    msync(p, sb.st_size, MS_SYNC);
+    munmap(p, tamMap);
+    close(fd);
+
+    return 0;
+}
+
+static void mostraMapeamento(const char *rotulo, void *addr)
+{
+    FILE *f = fopen("/proc/self/maps", "r");
+    char linha[512];
+    unsigned long ini, fim;
+
+    if (f == NULL)
+        return;
+
+    while (fgets(linha, sizeof linha, f) != NULL) {
+        if (sscanf(linha, "%lx-%lx", &ini, &fim) == 2 && (unsigned long) addr >= ini && (unsigned long) addr < fim) {
+            printf("%s: %s", rotulo, linha);
+            fclose(f);
+            return;
+        }
+    }
+
+    printf("%s: nenhum mapeamento cobre o endereco %p\n", rotulo, addr);
+    fclose(f);
+}
+
+Linha de comando para compilação e execução da demonstração:
+gcc -Wall -o ex5_segfault ex5_segfault.c
+cp texto.txt d_dentro.txt; ./ex5_segfault d_dentro.txt dentro
+(idem para fora, alem e guarda)
+
+Saída gerada (demonstração):
+== dentro
+arquivo: 226 bytes | pedido ao mmap: 226 bytes | paginas mapeadas do arquivo: 1
+mapeamento que contem o byte alvo: 7f9232603000-7f9232604000 rw-s 00000000 fe:00 795091                     /home/claude/lab7memoria/d_dentro.txt
+escrevendo 'X' em p[226] (modo dentro)
+escrita concluida sem erro
+exit=0
+arquivo inalterado
+== fora
+arquivo: 226 bytes | pedido ao mmap: 226 bytes | paginas mapeadas do arquivo: 1
+mapeamento que contem o byte alvo: 7ff6ed390000-7ff6ed392000 rw-p 00000000 00:00 0 
+escrevendo 'X' em p[4096] (modo fora)
+escrita concluida sem erro
+exit=0
+arquivo inalterado
+== alem
+arquivo: 226 bytes | pedido ao mmap: 8192 bytes | paginas mapeadas do arquivo: 2
+mapeamento que contem o byte alvo: 7f2a7365a000-7f2a7365c000 rw-s 00000000 fe:00 795098                     /home/claude/lab7memoria/d_alem.txt
+escrevendo 'X' em p[4096] (modo alem)
+/bin/bash: line 3:   491 Bus error               ./ex5_segfault d_$m.txt $m
+exit=135
+arquivo inalterado
+== guarda
+arquivo: 226 bytes | pedido ao mmap: 226 bytes | paginas mapeadas do arquivo: 1
+mapeamento que contem o byte alvo: 7f520c952000-7f520c953000 ---p 00000000 00:00 0 
+escrevendo 'X' em p[4096] (modo guarda)
+/bin/bash: line 3:   494 Segmentation fault      ./ex5_segfault d_$m.txt $m
+exit=139
+arquivo inalterado
+
+Código fonte da solução (ex5_mmap_append.c):
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+
+int main (int argc, char *argv[])
+{
+    struct stat sb;
+    size_t antigo, novo, tamTexto;
+    int vezes = 1;
+    char *p;
+    int fd;
+
+    if (argc < 3) {
+        fprintf(stderr, "Uso: %s arquivo texto [vezes]\n", argv[0]);
+        exit(1);
+    }
+
+    if (argc >= 4)
+        vezes = atoi(argv[3]);
+
+    tamTexto = strlen(argv[2]);
+
+    fd = open(argv[1], O_RDWR);
+    if (fd == -1) {
+        perror("open");
+        exit(1);
+    }
+
+    if (fstat(fd, &sb) == -1) {
+        perror("fstat");
+        exit(1);
+    }
+
+    if (!S_ISREG(sb.st_mode) || sb.st_size == 0) {
+        fprintf(stderr, "%s precisa ser um arquivo regular nao vazio\n", argv[1]);
+        exit(1);
+    }
+
+    antigo = sb.st_size;
+    novo = antigo + tamTexto * vezes;
+
+    p = mmap(0, antigo, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (p == MAP_FAILED) {
+        perror("mmap");
+        exit(1);
+    }
+
+    printf("mapeamento inicial: %p com %zu bytes\n", (void *) p, antigo);
+
+    if (ftruncate(fd, novo) == -1) {
+        perror("ftruncate");
+        exit(1);
+    }
+
+    if (munmap(p, antigo) == -1) {
+        perror("munmap");
+        exit(1);
+    }
+
+    p = mmap(0, novo, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (p == MAP_FAILED) {
+        perror("mmap novo");
+        exit(1);
+    }
+
+    printf("novo mapeamento:    %p com %zu bytes\n", (void *) p, novo);
+
+    for (int i = 0; i < vezes; i++)
+        memcpy(p + antigo + (size_t) i * tamTexto, argv[2], tamTexto);
+
+    if (msync(p, novo, MS_SYNC) == -1) {
+        perror("msync");
+        exit(1);
+    }
+
+    munmap(p, novo);
+    close(fd);
+
+    printf("arquivo passou de %zu para %zu bytes\n", antigo, novo);
+
+    return 0;
+}
+
+Linha de comando para compilação e execução:
+gcc -Wall -o ex5_mmap_append ex5_mmap_append.c
+./ex5_mmap_append arquivo "[acrescentado]\n" 1
+./ex5_mmap_append arquivo "[acrescentado]\n" 3000
+
+Saída gerada (ex5 e ex6, com verificação por cmp contra o conteúdo
+esperado, gerado em python3):
+== ex5_mmap_append texto=' [acrescentado]\n' vezes=1
+mapeamento inicial: 0x7fd00f6f9000 com 226 bytes
+novo mapeamento:    0x7fd00f6f9000 com 241 bytes
+arquivo passou de 226 para 241 bytes
+exit=0
+conteudo confere com o esperado (241 bytes)
+== ex5_mmap_append texto=' [acrescentado]\n' vezes=3000
+mapeamento inicial: 0x7f090e6b1000 com 226 bytes
+novo mapeamento:    0x7f090e6a6000 com 45226 bytes
+arquivo passou de 226 para 45226 bytes
+exit=0
+conteudo confere com o esperado (45226 bytes)
+== ex6_mremap_append texto=' [acrescentado]\n' vezes=1
+mapeamento inicial: 0x7fb57152f000 com 226 bytes
+apos mremap:        0x7fb57152f000 com 241 bytes (mesmo endereco)
+arquivo passou de 226 para 241 bytes
+exit=0
+conteudo confere com o esperado (241 bytes)
+== ex6_mremap_append texto=' [acrescentado]\n' vezes=3000
+mapeamento inicial: 0x7f86cf933000 com 226 bytes
+apos mremap:        0x7f86cf927000 com 45226 bytes (o mapeamento mudou de endereco)
+arquivo passou de 226 para 45226 bytes
+exit=0
+conteudo confere com o esperado (45226 bytes)
+
+Reflexão:
+Escrever pelo mapeamento nunca aumenta o arquivo. Os resultados mostram
+quatro situações: (dentro) escrever no resto da última página, após o fim do
+arquivo, não dá erro, mas o byte não é gravado no arquivo; (fora) escrever
+exatamente após a última página mapeada também não deu erro neste ambiente,
+pois nesse endereço havia outro mapeamento gravável (rw-p, anônimo, mostrado
+na saída), então o resultado depende do que está vizinho e não deve ser
+contado como seguro; (guarda) com uma página protegida logo após o
+mapeamento, a mesma escrita causa SIGSEGV; (alem) uma página mapeada
+inteiramente além do fim do arquivo causa SIGBUS. Para evitar o problema é
+preciso, antes de escrever: 1) aumentar o arquivo com ftruncate; 2) aumentar
+o mapeamento (munmap e novo mmap com o tamanho novo). Só então os bytes
+novos podem ser escritos, seguido de msync. O arquivo final bateu byte a byte
+com o esperado nos testes de 1 e de 3000 repetições (cruzando várias
+páginas). Observação: o novo mmap pode devolver outro endereço (visto na
+execução com 3000 repetições).
+
+
+EXERCÍCIO 6
+------------------------------------------------------------------------------
+Enunciado:
+Reescreva o programa do exercício 5 usando mremap().
+
+Código fonte (ex6_mremap_append.c):
+
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+
+int main (int argc, char *argv[])
+{
+    struct stat sb;
+    size_t antigo, novo, tamTexto;
+    int vezes = 1;
+    char *p, *q;
+    int fd;
+
+    if (argc < 3) {
+        fprintf(stderr, "Uso: %s arquivo texto [vezes]\n", argv[0]);
+        exit(1);
+    }
+
+    if (argc >= 4)
+        vezes = atoi(argv[3]);
+
+    tamTexto = strlen(argv[2]);
+
+    fd = open(argv[1], O_RDWR);
+    if (fd == -1) {
+        perror("open");
+        exit(1);
+    }
+
+    if (fstat(fd, &sb) == -1) {
+        perror("fstat");
+        exit(1);
+    }
+
+    if (!S_ISREG(sb.st_mode) || sb.st_size == 0) {
+        fprintf(stderr, "%s precisa ser um arquivo regular nao vazio\n", argv[1]);
+        exit(1);
+    }
+
+    antigo = sb.st_size;
+    novo = antigo + tamTexto * vezes;
+
+    p = mmap(0, antigo, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (p == MAP_FAILED) {
+        perror("mmap");
+        exit(1);
+    }
+
+    printf("mapeamento inicial: %p com %zu bytes\n", (void *) p, antigo);
+
+    if (ftruncate(fd, novo) == -1) {
+        perror("ftruncate");
+        exit(1);
+    }
+
+    q = mremap(p, antigo, novo, MREMAP_MAYMOVE);
+    if (q == MAP_FAILED) {
+        perror("mremap");
+        exit(1);
+    }
+
+    printf("apos mremap:        %p com %zu bytes (%s)\n", (void *) q, novo, q == p ? "mesmo endereco" : "o mapeamento mudou de endereco");
+    p = q;
+
+    for (int i = 0; i < vezes; i++)
+        memcpy(p + antigo + (size_t) i * tamTexto, argv[2], tamTexto);
+
+    if (msync(p, novo, MS_SYNC) == -1) {
+        perror("msync");
+        exit(1);
+    }
+
+    munmap(p, novo);
+    close(fd);
+
+    printf("arquivo passou de %zu para %zu bytes\n", antigo, novo);
+
+    return 0;
+}
+
+Linha de comando para compilação e execução:
+gcc -Wall -o ex6_mremap_append ex6_mremap_append.c
+./ex6_mremap_append arquivo "[acrescentado]\n" 1
+./ex6_mremap_append arquivo "[acrescentado]\n" 3000
+
+Saída gerada: ver a saída conjunta do exercício 5 (seções "ex6_mremap_append").
+
+Reflexão:
+O mremap aumenta (ou move) o mapeamento existente sem desmapear e mapear de
+novo. O ftruncate continua necessário antes, para o arquivo ter tamanho para
+as páginas novas. Com MREMAP_MAYMOVE (exige _GNU_SOURCE) o kernel pode mudar
+o endereço se não houver espaço livre depois da região: com 1 repetição o
+endereço permaneceu o mesmo e com 3000 mudou, por isso o ponteiro deve ser
+atualizado com o valor retornado. O resultado foi idêntico ao do exercício 5
+(cmp sem diferenças).
